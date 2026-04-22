@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/controllers/disruption/schedcache"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	scheduler "sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
@@ -54,6 +56,10 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		return []Command{}, nil
 	}
 	candidates = m.sortCandidates(candidates)
+	var cache *schedcache.PassCache
+	if options.FromContext(ctx).EnableConsolidationSchedulerCache {
+		cache = schedcache.New(m.clock)
+	}
 	ctx = WithConsolidationType(ctx, m.ConsolidationType())
 
 	// In order, filter out all candidates that would violate the budget.
@@ -87,7 +93,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	// This could be further configurable in the future.
 	maxParallel := lo.Clamp(len(disruptableCandidates), 0, 100)
 
-	cmd, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel)
+	cmd, err := m.firstNConsolidationOption(ctx, cache, disruptableCandidates, maxParallel)
 	if err != nil {
 		return []Command{}, err
 	}
@@ -116,7 +122,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 // firstNConsolidationOption looks at the first N NodeClaims to determine if they can all be consolidated at once.  The
 // NodeClaims are sorted by increasing disruption order which correlates to likelihood of being able to consolidate the node
 // nolint:gocyclo
-func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, candidates []*Candidate, max int) (Command, error) {
+func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, cache *schedcache.PassCache, candidates []*Candidate, max int) (Command, error) {
 	// we always operate on at least two NodeClaims at once, for single NodeClaims standard consolidation will find all solutions
 	if len(candidates) < 2 {
 		return Command{}, nil
@@ -135,7 +141,7 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 		candidatesToConsolidate := candidates[0 : mid+1]
 
 		// Pass the timeout context to ensure sub-operations can be canceled
-		cmd, err := m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
+		cmd, err := m.computeConsolidationWithCache(timeoutCtx, cache, candidatesToConsolidate...)
 		// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
