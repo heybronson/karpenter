@@ -34,6 +34,7 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	disruptionevents "sigs.k8s.io/karpenter/pkg/controllers/disruption/events"
+	"sigs.k8s.io/karpenter/pkg/controllers/disruption/schedcache"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
@@ -54,6 +55,29 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	candidateNames := sets.NewString(lo.Map(candidates, func(t *Candidate, i int) string { return t.Name() })...)
 	nodes := cluster.DeepCopyNodes()
 	deletingNodes := nodes.Deleting()
+
+	// duration metric — fires on all paths (cached and uncached); cached is updated below if
+	// the short-circuit fires so the deferred closure sees the final value.
+	start := clk.Now()
+	ct, _ := ctx.Value(consolidationTypeKey{}).(string)
+	if ct == "" {
+		ct = "validation" // default for callers like validation.go that don't wrap the context
+	}
+	cached := false
+	defer func() {
+		ConsolidationSimulationDurationSeconds.Observe(
+			clk.Since(start).Seconds(),
+			map[string]string{ConsolidationTypeLabel: ct, cachedLabel: fmt.Sprintf("%t", cached)},
+		)
+	}()
+
+	// Short-circuit to the cached path when a populated PassCache is attached to the context.
+	if cache, ok := ctx.Value(simulateWithCacheKey{}).(*schedcache.PassCache); ok && cache != nil && cache.Populated() {
+		cached = true
+		ctx = WithCacheMarker(ctx, true)
+		return simulateSchedulingWithCache(ctx, kubeClient, cluster, provisioner, clk, recorder, cache, candidates...)
+	}
+
 	stateNodes := lo.Filter(nodes.Active(), func(n *state.StateNode, _ int) bool {
 		return !candidateNames.Has(n.Name())
 	})
@@ -66,19 +90,6 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	}); ok {
 		return scheduling.Results{}, errCandidateDeleting
 	}
-
-	start := clk.Now()
-	ct, _ := ctx.Value(consolidationTypeKey{}).(string)
-	if ct == "" {
-		ct = "validation" // default for callers like validation.go that don't wrap the context
-	}
-	cached, _ := ctx.Value(cachedKey{}).(bool)
-	defer func() {
-		ConsolidationSimulationDurationSeconds.Observe(
-			clk.Since(start).Seconds(),
-			map[string]string{ConsolidationTypeLabel: ct, cachedLabel: fmt.Sprintf("%t", cached)},
-		)
-	}()
 
 	// start by getting all pending pods
 	pods, err := provisioner.GetPendingPods(ctx)
@@ -295,6 +306,7 @@ func BuildDisruptionBudgetMapping(ctx context.Context, cluster *state.Cluster, c
 
 type consolidationTypeKey struct{}
 type cachedKey struct{}
+type simulateWithCacheKey struct{}
 
 // WithConsolidationType marks the context with the consolidation method label used by simulation metrics.
 func WithConsolidationType(ctx context.Context, method string) context.Context {
@@ -304,6 +316,85 @@ func WithConsolidationType(ctx context.Context, method string) context.Context {
 // WithCacheMarker records whether an upcoming SimulateScheduling call will reuse cached inputs.
 func WithCacheMarker(ctx context.Context, cached bool) context.Context {
 	return context.WithValue(ctx, cachedKey{}, cached)
+}
+
+// simulateSchedulingWithCache runs the scheduling simulation using pre-fetched inputs from a
+// PassCache, bypassing the three expensive fetch operations in SimulateScheduling. The duration
+// metric defer in SimulateScheduling fires after this function returns, so no additional timing
+// instrumentation is needed here.
+func simulateSchedulingWithCache(
+	ctx context.Context, kubeClient client.Client, cluster *state.Cluster,
+	provisioner *provisioning.Provisioner, clk clock.Clock, recorder events.Recorder,
+	cache *schedcache.PassCache, candidates ...*Candidate,
+) (scheduling.Results, error) {
+	// Re-run the deleting-candidates guard that SimulateScheduling's short-circuit skipped.
+	candidateNames := sets.NewString(lo.Map(candidates, func(c *Candidate, _ int) string { return c.Name() })...)
+	deletingNodes := cluster.DeepCopyNodes().Deleting()
+	if _, ok := lo.Find(deletingNodes, func(n *state.StateNode) bool {
+		return candidateNames.Has(n.Name())
+	}); ok {
+		return scheduling.Results{}, errCandidateDeleting
+	}
+
+	// Use cache inputs instead of re-fetching pending pods, PDBs, and state nodes.
+	pods := append([]*corev1.Pod{}, cache.PendingPods()...)
+	pdbs := cache.PDBs()
+	stateNodes := cache.StateNodes()
+
+	// Per-candidate reschedulable pod filter — identical to SimulateScheduling's inline block.
+	for _, n := range candidates {
+		currentlyReschedulable := lo.Filter(n.reschedulablePods, func(p *corev1.Pod, _ int) bool {
+			return pdbs.IsCurrentlyReschedulable(p, clk, recorder)
+		})
+		pods = append(pods, currentlyReschedulable...)
+	}
+	deletingPods, err := deletingNodes.CurrentlyReschedulablePods(ctx, kubeClient, clk, recorder)
+	if err != nil {
+		return scheduling.Results{}, fmt.Errorf("failed to get pods from deleting nodes, %w", err)
+	}
+	pods = append(pods, deletingPods...)
+
+	var opts []scheduling.Options
+	if options.FromContext(ctx).PreferencePolicy == options.PreferencePolicyIgnore {
+		opts = append(opts, scheduling.IgnorePreferences)
+	}
+	opts = append(opts, scheduling.MinValuesPolicy(options.FromContext(ctx).MinValuesPolicy))
+
+	scheduler, err := provisioner.NewScheduler(
+		log.IntoContext(ctx, operatorlogging.NopLogger), pods, stateNodes, opts...,
+	)
+	if err != nil {
+		return scheduling.Results{}, fmt.Errorf("creating scheduler, %w", err)
+	}
+
+	results, err := scheduler.Solve(log.IntoContext(ctx, operatorlogging.NopLogger), pods)
+	if err != nil {
+		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
+	}
+	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
+
+	// Uninitialized-node guard — identical to SimulateScheduling's inline block.
+	deletingPodKeys := lo.SliceToMap(deletingPods, func(p *corev1.Pod) (client.ObjectKey, interface{}) {
+		return client.ObjectKeyFromObject(p), nil
+	})
+	for _, n := range results.ExistingNodes {
+		if !n.Initialized() {
+			for _, p := range n.Pods {
+				if _, ok := deletingPodKeys[client.ObjectKeyFromObject(p)]; !ok {
+					results.PodErrors[p] = NewUninitializedNodeError(n)
+				}
+			}
+		}
+	}
+
+	// Count the cache hit.
+	ct, _ := ctx.Value(consolidationTypeKey{}).(string)
+	if ct == "" {
+		ct = "validation"
+	}
+	ConsolidationCacheHitsTotal.Inc(map[string]string{ConsolidationTypeLabel: ct})
+
+	return results, nil
 }
 
 // mapCandidates maps the list of proposed candidates with the current state
