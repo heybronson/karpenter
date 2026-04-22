@@ -29,6 +29,7 @@ const (
 	decisionLabel                = "decision"
 	ConsolidationTypeLabel       = "consolidation_type"
 	CandidatesIneligible         = "candidates_ineligible"
+	cachedLabel                  = "cached"
 )
 
 func init() {
@@ -97,6 +98,37 @@ var (
 			Help:      "Number of candidates that were selected for disruption but failed validation. Labeled by consolidation type.",
 		},
 		[]string{ConsolidationTypeLabel},
+	)
+	ConsolidationSimulationDurationSeconds = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_simulation_duration_seconds",
+			Help:      "Wall-clock duration of one SimulateScheduling call. Labeled by consolidation type and whether inputs came from the per-pass cache.",
+			Buckets:   metrics.DurationBuckets(),
+		},
+		[]string{ConsolidationTypeLabel, cachedLabel},
+	)
+	ConsolidationCacheHitsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_cache_hits_total",
+			Help:      "Number of times the per-pass scheduler cache served a SimulateScheduling call. Labeled by consolidation type.",
+		},
+		[]string{ConsolidationTypeLabel},
+	)
+	ConsolidationCacheInvalidatedTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_cache_invalidated_total",
+			Help:      "Number of per-pass cache invalidations. Labeled by reason.",
+		},
+		[]string{metrics.ReasonLabel},
 	)
 	NodePoolAllowedDisruptions = opmetrics.NewPrometheusGauge(
 		crmetrics.Registry,
