@@ -33,12 +33,15 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	disruptionevents "sigs.k8s.io/karpenter/pkg/controllers/disruption/events"
+	"sigs.k8s.io/karpenter/pkg/controllers/disruption/schedcache"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
 	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
+	"sigs.k8s.io/karpenter/pkg/utils/pdb"
 )
 
 // commandValidationDelay is the time we wait between creating a consolidation command and validating that it still works.
@@ -334,4 +337,46 @@ func getCandidatePrices(candidates []*Candidate) float64 {
 		price += compatibleOfferings.Cheapest().Price
 	}
 	return price
+}
+
+func buildCacheFromCluster(ctx context.Context, c *consolidation, cache *schedcache.PassCache) error {
+	pods, err := c.provisioner.GetPendingPods(ctx)
+	if err != nil {
+		return err
+	}
+	pdbs, err := pdb.NewLimits(ctx, c.kubeClient)
+	if err != nil {
+		return err
+	}
+	stateNodes := c.cluster.DeepCopyNodes()
+	return cache.Build(ctx, schedcache.BuildInputs{
+		PendingPods:       pods,
+		PDBs:              pdbs,
+		StateNodes:        stateNodes,
+		ConsolidationMark: c.cluster.ConsolidationState(),
+	})
+}
+
+// computeConsolidationWithCache routes computeConsolidation through the cache when enabled.
+// Thin wrapper: on first call, builds the cache and sets a context key that SimulateScheduling
+// detects in its opening guard (helpers.go) to switch to the cached path. computeConsolidation
+// itself is unchanged.
+func (c *consolidation) computeConsolidationWithCache(
+	ctx context.Context, cache *schedcache.PassCache, candidates ...*Candidate,
+) (Command, error) {
+	if cache == nil {
+		return c.computeConsolidation(ctx, candidates...)
+	}
+	if cache.Populated() && !cache.IsValidAgainst(c.cluster.ConsolidationState()) {
+		ConsolidationCacheInvalidatedTotal.Inc(map[string]string{metrics.ReasonLabel: "consolidation_state_advanced"})
+		cache = nil
+		return c.computeConsolidation(ctx, candidates...)
+	}
+	if !cache.Populated() {
+		if err := buildCacheFromCluster(ctx, c, cache); err != nil {
+			return c.computeConsolidation(ctx, candidates...) // uncached fallback
+		}
+	}
+	ctx = context.WithValue(ctx, simulateWithCacheKey{}, cache)
+	return c.computeConsolidation(ctx, candidates...)
 }

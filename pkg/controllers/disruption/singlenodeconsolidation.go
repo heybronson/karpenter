@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/controllers/disruption/schedcache"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -61,6 +63,10 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	// Set a timeout
 	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
+	var cache *schedcache.PassCache
+	if options.FromContext(ctx).EnableConsolidationSchedulerCache {
+		cache = schedcache.New(s.clock)
+	}
 	ctx = WithConsolidationType(ctx, s.ConsolidationType())
 	constrainedByBudgets := false
 
@@ -93,7 +99,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 
 		// compute a possible consolidation option
-		cmd, err := s.computeConsolidation(ctx, candidate)
+		cmd, err := s.computeConsolidationWithCache(ctx, cache, candidate)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue

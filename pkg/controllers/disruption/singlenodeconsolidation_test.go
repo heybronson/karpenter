@@ -31,6 +31,7 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	"sigs.k8s.io/karpenter/pkg/utils/pdb"
@@ -257,6 +258,40 @@ var _ = Describe("SingleNodeConsolidation", func() {
 			}
 		}
 		Expect(found).To(BeTrue())
+	})
+
+	It("reuses cache across candidates when --enable-consolidation-scheduler-cache=true", func() {
+		ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+			EnableConsolidationSchedulerCache: lo.ToPtr(true),
+		}))
+		candidates, err := createCandidates(1.0, 1)
+		Expect(err).ToNot(HaveOccurred())
+
+		budgetMapping := map[string]int{
+			nodePool1.Name: 1,
+			nodePool2.Name: 1,
+			nodePool3.Name: 1,
+		}
+		_, err = consolidation.ComputeCommands(ctx, budgetMapping, candidates...)
+		Expect(err).ToNot(HaveOccurred())
+
+		mfs, err := crmetrics.Registry.Gather()
+		Expect(err).ToNot(HaveOccurred())
+		var hits float64
+		for _, mf := range mfs {
+			if mf.GetName() == "karpenter_voluntary_disruption_consolidation_cache_hits_total" {
+				for _, m := range mf.GetMetric() {
+					labels := map[string]string{}
+					for _, p := range m.Label {
+						labels[p.GetName()] = p.GetValue()
+					}
+					if labels[disruption.ConsolidationTypeLabel] == disruption.SingleNodeConsolidationType {
+						hits += m.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+		Expect(hits).To(BeNumerically(">=", 1))
 	})
 })
 
