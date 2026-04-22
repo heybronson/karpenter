@@ -67,6 +67,19 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, errCandidateDeleting
 	}
 
+	start := clk.Now()
+	ct, _ := ctx.Value(consolidationTypeKey{}).(string)
+	if ct == "" {
+		ct = "validation" // default for callers like validation.go that don't wrap the context
+	}
+	cached, _ := ctx.Value(cachedKey{}).(bool)
+	defer func() {
+		ConsolidationSimulationDurationSeconds.Observe(
+			clk.Since(start).Seconds(),
+			map[string]string{ConsolidationTypeLabel: ct, cachedLabel: fmt.Sprintf("%t", cached)},
+		)
+	}()
+
 	// start by getting all pending pods
 	pods, err := provisioner.GetPendingPods(ctx)
 	if err != nil {
@@ -278,6 +291,19 @@ func BuildDisruptionBudgetMapping(ctx context.Context, cluster *state.Cluster, c
 		}
 	}
 	return disruptionBudgetMapping, nil
+}
+
+type consolidationTypeKey struct{}
+type cachedKey struct{}
+
+// WithConsolidationType marks the context with the consolidation method label used by simulation metrics.
+func WithConsolidationType(ctx context.Context, method string) context.Context {
+	return context.WithValue(ctx, consolidationTypeKey{}, method)
+}
+
+// WithCacheMarker records whether an upcoming SimulateScheduling call will reuse cached inputs.
+func WithCacheMarker(ctx context.Context, cached bool) context.Context {
+	return context.WithValue(ctx, cachedKey{}, cached)
 }
 
 // mapCandidates maps the list of proposed candidates with the current state

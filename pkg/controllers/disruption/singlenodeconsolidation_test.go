@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
@@ -225,6 +226,37 @@ var _ = Describe("SingleNodeConsolidation", func() {
 			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool2.Name)).To(BeTrue())
 			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool3.Name)).To(BeTrue())
 		})
+	})
+
+	It("emits consolidation_simulation_duration_seconds", func() {
+		candidates, err := createCandidates(1.0, 1)
+		Expect(err).ToNot(HaveOccurred())
+
+		budgetMapping := map[string]int{
+			nodePool1.Name: 1,
+			nodePool2.Name: 1,
+			nodePool3.Name: 1,
+		}
+		_, err = consolidation.ComputeCommands(ctx, budgetMapping, candidates...)
+		Expect(err).ToNot(HaveOccurred())
+
+		mfs, err := crmetrics.Registry.Gather()
+		Expect(err).ToNot(HaveOccurred())
+		var found bool
+		for _, mf := range mfs {
+			if mf.GetName() == "karpenter_voluntary_disruption_consolidation_simulation_duration_seconds" {
+				for _, m := range mf.GetMetric() {
+					labels := map[string]string{}
+					for _, p := range m.Label {
+						labels[p.GetName()] = p.GetValue()
+					}
+					if labels[disruption.ConsolidationTypeLabel] == disruption.SingleNodeConsolidationType && m.GetHistogram().GetSampleCount() >= 1 {
+						found = true
+					}
+				}
+			}
+		}
+		Expect(found).To(BeTrue())
 	})
 })
 
