@@ -128,7 +128,7 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(false),
 					StaticCapacity:          lo.ToPtr(false),
 				},
-				IgnoreDRARequests:                lo.ToPtr(true),
+				IgnoreDRARequests:                 lo.ToPtr(true),
 				EnableConsolidationSchedulerCache: lo.ToPtr(false),
 			}))
 		})
@@ -188,7 +188,7 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests:                lo.ToPtr(true),
+				IgnoreDRARequests:                 lo.ToPtr(true),
 				EnableConsolidationSchedulerCache: lo.ToPtr(true),
 			}))
 		})
@@ -248,7 +248,7 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests:                lo.ToPtr(true),
+				IgnoreDRARequests:                 lo.ToPtr(true),
 				EnableConsolidationSchedulerCache: lo.ToPtr(true),
 			}))
 		})
@@ -309,7 +309,7 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests:                lo.ToPtr(true),
+				IgnoreDRARequests:                 lo.ToPtr(true),
 				EnableConsolidationSchedulerCache: lo.ToPtr(false),
 			}))
 		})

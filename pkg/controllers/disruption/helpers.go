@@ -142,27 +142,23 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
 	}
 	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
+	annotateUninitializedNodeErrors(results, deletingNodePodKeys)
+	return results, nil
+}
+
+// annotateUninitializedNodeErrors marks pods that schedule to uninitialized nodes with
+// UninitializedNodeError, skipping pods already on deleting nodes (they are accounted for elsewhere).
+func annotateUninitializedNodeErrors(results scheduling.Results, deletingNodePodKeys map[client.ObjectKey]interface{}) {
 	for _, n := range results.ExistingNodes {
-		// We consider existing nodes for scheduling. When these nodes are unmanaged, their taint logic should
-		// tell us if we can schedule to them or not; however, if these nodes are managed, we will still schedule to them
-		// even if they are still in the middle of their initialization loop. In the case of disruption, we don't want
-		// to proceed disrupting if our scheduling decision relies on nodes that haven't entered a terminal state.
-		if !n.Initialized() {
-			for _, p := range n.Pods {
-				// Only add a pod scheduling error if it isn't on an already deleting node.
-				// If the pod is on a deleting node, we assume one of two things has already happened:
-				// 1. The node was manually terminated, at which the provisioning controller has scheduled or is scheduling a node
-				//    for the pod.
-				// 2. The node was chosen for a previous disruption command, we assume that the uninitialized node will come up
-				//    for this command, and we assume it will be successful. If it is not successful, the node will become
-				//    not terminating, and we will no longer need to consider these pods.
-				if _, ok := deletingNodePodKeys[client.ObjectKeyFromObject(p)]; !ok {
-					results.PodErrors[p] = NewUninitializedNodeError(n)
-				}
+		if n.Initialized() {
+			continue
+		}
+		for _, p := range n.Pods {
+			if _, ok := deletingNodePodKeys[client.ObjectKeyFromObject(p)]; !ok {
+				results.PodErrors[p] = NewUninitializedNodeError(n)
 			}
 		}
 	}
-	return results, nil
 }
 
 // UninitializedNodeError tracks a special pod error for disruption where pods schedule to a node
@@ -373,19 +369,10 @@ func simulateSchedulingWithCache(
 	}
 	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
 
-	// Uninitialized-node guard — identical to SimulateScheduling's inline block.
 	deletingPodKeys := lo.SliceToMap(deletingPods, func(p *corev1.Pod) (client.ObjectKey, interface{}) {
 		return client.ObjectKeyFromObject(p), nil
 	})
-	for _, n := range results.ExistingNodes {
-		if !n.Initialized() {
-			for _, p := range n.Pods {
-				if _, ok := deletingPodKeys[client.ObjectKeyFromObject(p)]; !ok {
-					results.PodErrors[p] = NewUninitializedNodeError(n)
-				}
-			}
-		}
-	}
+	annotateUninitializedNodeErrors(results, deletingPodKeys)
 
 	// Count the cache hit.
 	ct, _ := ctx.Value(consolidationTypeKey{}).(string)
