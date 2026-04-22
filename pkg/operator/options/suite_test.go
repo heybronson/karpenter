@@ -52,6 +52,7 @@ var _ = Describe("Options", func() {
 		"KUBE_CLIENT_QPS",
 		"KUBE_CLIENT_BURST",
 		"ENABLE_PROFILING",
+		"ENABLE_CONSOLIDATION_SCHEDULER_CACHE",
 		"DISABLE_CONTROLLER_WARMUP",
 		"DISABLE_LEADER_ELECTION",
 		"DISABLE_CLUSTER_STATE_OBSERVABILITY",
@@ -127,7 +128,8 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(false),
 					StaticCapacity:          lo.ToPtr(false),
 				},
-				IgnoreDRARequests: lo.ToPtr(true),
+				IgnoreDRARequests:                lo.ToPtr(true),
+				EnableConsolidationSchedulerCache: lo.ToPtr(false),
 			}))
 		})
 
@@ -142,6 +144,7 @@ var _ = Describe("Options", func() {
 				"--kube-client-qps", "0",
 				"--kube-client-burst", "0",
 				"--enable-profiling",
+				"--enable-consolidation-scheduler-cache",
 				"--disable-controller-warmup=false",
 				"--disable-leader-election=true",
 				"--disable-cluster-state-observability=true",
@@ -185,7 +188,8 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests: lo.ToPtr(true),
+				IgnoreDRARequests:                lo.ToPtr(true),
+				EnableConsolidationSchedulerCache: lo.ToPtr(true),
 			}))
 		})
 
@@ -196,6 +200,7 @@ var _ = Describe("Options", func() {
 			os.Setenv("KUBE_CLIENT_QPS", "0")
 			os.Setenv("KUBE_CLIENT_BURST", "0")
 			os.Setenv("ENABLE_PROFILING", "true")
+			os.Setenv("ENABLE_CONSOLIDATION_SCHEDULER_CACHE", "true")
 			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
 			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
@@ -243,7 +248,8 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests: lo.ToPtr(true),
+				IgnoreDRARequests:                lo.ToPtr(true),
+				EnableConsolidationSchedulerCache: lo.ToPtr(true),
 			}))
 		})
 
@@ -303,7 +309,8 @@ var _ = Describe("Options", func() {
 					NodeOverlay:             lo.ToPtr(true),
 					StaticCapacity:          lo.ToPtr(true),
 				},
-				IgnoreDRARequests: lo.ToPtr(true),
+				IgnoreDRARequests:                lo.ToPtr(true),
+				EnableConsolidationSchedulerCache: lo.ToPtr(false),
 			}))
 		})
 
@@ -406,4 +413,5 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.FeatureGates.StaticCapacity).To(Equal(optsB.FeatureGates.StaticCapacity))
 	Expect(optsA.FeatureGates.SpotToSpotConsolidation).To(Equal(optsB.FeatureGates.SpotToSpotConsolidation))
 	Expect(optsA.IgnoreDRARequests).To(Equal(optsB.IgnoreDRARequests))
+	Expect(optsA.EnableConsolidationSchedulerCache).To(Equal(optsB.EnableConsolidationSchedulerCache))
 }
